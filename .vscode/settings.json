@@ -1,0 +1,8 @@
+{
+  "rust-analyzer.linkedProjects": [
+    "Cargo.toml",
+    "kill-probe-ebpf/Cargo.toml",
+    "./kill-probe/Cargo.toml"
+  ],
+  "rust-analyzer.check.allTargets": false
+}
