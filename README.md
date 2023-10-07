@@ -24,3 +24,7 @@ cargo build
 ```bash
 RUST_LOG=info cargo xtask run
 ```
+
+
+## About
+See [this post](https://saltedfish.fun/index.php/archives/54/)
