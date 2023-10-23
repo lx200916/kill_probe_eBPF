@@ -170,7 +170,7 @@ fn get_username_from_uid(uid: i32) -> Option<String> {
 }
 async fn notify(message: String){
     // let fs_token:Option<String> = std::env::var("FS_Token").ok();
-    let fs_token = Some(env!("FS_Token"));
+    let fs_token = option_env!("FS_Token");
     if fs_token.is_none() {
         return;
     }
