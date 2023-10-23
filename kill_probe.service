@@ -1,0 +1,14 @@
+[Unit]
+Description=Kill Probe Service
+After=network.target syslog.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/kill-probe/target/release
+ExecStart=/kill-probe/target/release/kill-probe
+ExecStartPre=/bin/mount -t bpf /sys/fs/bpf /sys/fs/bpf
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

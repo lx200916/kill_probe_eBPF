@@ -6,14 +6,22 @@ use aya::{include_bytes_aligned, Bpf, BpfLoader};
 use aya_log::BpfLogger;
 use bytes::BytesMut;
 use kill_probe_common::Data;
-use log::{debug, info, warn};
+use log::{debug, info, warn, error};
+use serde_json::json;
+use std::collections::HashMap;
+use std::fmt::format;
 use std::path::Path;
+use std::sync::OnceLock;
 use tokio::signal;
 use uzers::get_user_by_uid;
+use reqwest::Client;
+use std::cell::OnceCell;
+
+static CLIENT: OnceLock<Client> = OnceLock::new();
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
-    let _logger = flexi_logger::Logger::try_with_str("info, my::critical::module=trace")?
+    let _logger = flexi_logger::Logger::try_with_env_or_str("info, my::critical::module=trace")?
         .log_to_file(flexi_logger::FileSpec::default())
         .write_mode(flexi_logger::WriteMode::BufferAndFlush)
         .start()?;
@@ -78,12 +86,14 @@ async fn handle_enter_envent(bpf: &'static mut Bpf) -> Result<(), anyhow::Error>
                 .map(|_| BytesMut::with_capacity(10240))
                 .collect::<Vec<_>>();
             loop {
-                let events = buf.read_events(&mut buffers).await.unwrap();
-                for i in 0..events.read {
+                let events = buf.read_events(&mut buffers).await;
+                if events.is_ok() {
+                    for i in 0..events.unwrap().read {
                     let event_ptr = &mut buffers[i];
                     let val_data = unsafe { (event_ptr.as_ptr() as *const Data).read_unaligned() };
                     let _ = handle_kill(&val_data).await;
                     // let pid_tgid = ((val_data.pid as u64) << 32 | val_data.tid as u64) as u64;
+                }
                 }
             }
         });
@@ -121,7 +131,7 @@ async fn handle_kill(data: &Data) -> Result<(), anyhow::Error> {
             }
         } else {
             if data.ruid < 0 {
-                // We Failed to find Real UID.
+                // We Failed to find Real UIDs.
                 data.ruid = data.uid as i32;
                 data.rgid = data.gid as i32;
             }
@@ -132,9 +142,11 @@ async fn handle_kill(data: &Data) -> Result<(), anyhow::Error> {
                 let username =
                     get_username_from_uid(data.ruid).unwrap_or_else(|| "Unknown".to_string());
 
-                info!("Attempt to kill with sudo and success. pid: {}, tid: {}, killed_pid: {}, sig: {},ret: {:?} uid:{} gid:{} ruid:{} rgid:{} uname:{}",
+                let message = format!("Attempt to kill with sudo and success. pid: {}, tid: {}, killed_pid: {}, sig: {},ret: {:?} uid:{} gid:{} ruid:{} rgid:{} uname:{}",
                     data.pid, data.tid, data.killed_pid, data.sig, data.ret, data.uid, data.gid, data.ruid, data.rgid, username
                 );
+                info!("{}",message);
+                notify(message).await;
             } else {
                 let username =
                     get_username_from_uid(data.ruid).unwrap_or_else(|| "Unknown".to_string());
@@ -154,5 +166,22 @@ fn get_username_from_uid(uid: i32) -> Option<String> {
         None
     } else {
         Some(get_user_by_uid(uid as u32).map(|s| s.name().to_string_lossy().to_string())?)
+    }
+}
+async fn notify(message: String){
+    // let fs_token:Option<String> = std::env::var("FS_Token").ok();
+    let fs_token = Some(env!("FS_Token"));
+    if fs_token.is_none() {
+        return;
+    }
+    let url = format!("https://open.feishu.cn/open-apis/bot/v2/hook/{}",fs_token.unwrap());
+    let mut map: HashMap<&str, serde_json::Value> = HashMap::new();
+    map.insert("msg_type", json!("text"));
+    map.insert("content", json!({"text":message}));
+    let res = CLIENT.get_or_init(||Client::new()).post(url).json(&map).send().await;
+    if res.is_err() {
+     error!("{:?}",res.err())   
+    }else {
+       debug!( "{:?}",res.unwrap().text().await)
     }
 }
