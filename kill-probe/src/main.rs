@@ -5,7 +5,7 @@ use aya::util::online_cpus;
 use aya::{include_bytes_aligned, Bpf, BpfLoader};
 use aya_log::BpfLogger;
 use bytes::BytesMut;
-use flexi_logger::{Age, Cleanup, Criterion, Naming};
+use flexi_logger::{opt_format, Age, Cleanup, Criterion, Naming};
 use kill_probe_common::Data;
 use log::{debug, error, info, warn};
 use reqwest::Client;
@@ -13,13 +13,16 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::OnceLock;
+use sysinfo::{ProcessExt, SystemExt};
 use tokio::signal;
 use uzers::get_user_by_uid;
 static CLIENT: OnceLock<Client> = OnceLock::new();
-
+static WHITE_LIST: OnceLock<Vec<u64>> = OnceLock::new();
+static WHITE_NAME_LIST: [&'static str; 1] = ["systemd-udevd"];
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     let _logger = flexi_logger::Logger::try_with_env_or_str("info, my::critical::module=trace")?
+        .format_for_files(opt_format)
         .rotate(
             // If the program runs long enough,
             Criterion::Age(Age::Day), // - create a new file every day
@@ -47,6 +50,42 @@ async fn main() -> Result<(), anyhow::Error> {
     let bpf = loader.load(include_bytes_aligned!(
         "../../target/bpfel-unknown-none/debug/kill-probe"
     ))?;
+    #[cfg(target_os = "linux")]
+    println!(
+        "{:?}",
+        WHITE_LIST.get_or_init(|| {
+            let mut sys = sysinfo::System::new_with_specifics(
+                sysinfo::RefreshKind::new()
+                    .with_processes(sysinfo::ProcessRefreshKind::new().with_user()),
+            );
+            sys.refresh_all();
+            let processes = sys.processes();
+            return processes
+                .into_iter()
+                .filter(|(_, process)| {
+                    for name in WHITE_NAME_LIST.into_iter() {
+                        if process.name() == name {
+                            // println!("{} {}", process.name(), process.pid());
+                            // println!("{:?},{:?}", process.cwd(), process.user_id());
+                            if let Some(uid) = process.user_id() {
+                                if **uid ==0 && process.cwd()== Path::new("/"){
+                                    if process.cmd().len() ==1 && process.cmd()[0].starts_with("/lib/systemd") {
+                                        return  true;
+                                    }
+                                }
+
+                        }
+                        }
+                    }
+                    return false;
+                })
+                .map(|(pid, _)| sysinfo::PidExt::as_u32(*pid) as u64)
+                .collect::<Vec<u64>>();
+        })
+    );
+    #[cfg(not(target_os = "linux"))]
+    WHITE_LIST.get_or_init(|| vec![]);
+
     #[cfg(not(debug_assertions))]
     let bpf = BpfLoader::new()
         .map_pin_path(Path::new("/sys/fs/bpf/kill_probe/"))
@@ -135,6 +174,12 @@ async fn handle_kill(data: &Data) -> Result<(), anyhow::Error> {
                 _ => {}
             }
         } else {
+            if let Some(w) = WHITE_LIST.get() {
+                if w.contains(&(data.pid.into())) {
+                    return Ok(());
+                }
+                
+            }
             if data.ruid < 0 {
                 // We Failed to find Real UIDs.
                 data.ruid = data.uid as i32;
